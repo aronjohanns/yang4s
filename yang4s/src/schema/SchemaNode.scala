@@ -1,39 +1,6 @@
 package yang4s.schema
 
-import yang4s.schema.SchemaNodeKind.LeafNode
-import yang4s.schema.SchemaNodeKind.ListNode
-
-
-enum Status(val literal: String) {
-  case Current extends Status("current")
-  case Deprecated extends Status("deprecated")
-  case Obsolete extends Status("Obsolete")
-} 
-object Status {
-  def fromLiteral(literal: String): Option[Status] = {
-    Status.values.find(_.literal == literal)
-  }
-}
-
-case class SchemaMeta(
-    qName: QName,
-    description: Option[String],
-    config: Boolean,
-    status: Status,
-    ifFeatures: List[QName],
-)
-
-sealed trait SchemaNodeKind
-
-object SchemaNodeKind {
-  type DataDefiningKind = ListNode | ContainerNode.type
-  type TerminalKind = LeafNode | LeafList.type
-
-  case object ContainerNode extends SchemaNodeKind
-  case class ListNode(key: QName) extends SchemaNodeKind
-  case class LeafNode(mandatory: Boolean) extends SchemaNodeKind
-  case object LeafList extends SchemaNodeKind
-}
+import SchemaDefinition.*
 
 sealed trait SchemaNode {
   def meta: SchemaMeta
@@ -44,33 +11,35 @@ sealed trait SchemaNode {
 }
 
 object SchemaNode {
-  import SchemaNodeKind.*
-  type DataNode = TerminalNode | DataDefiningNode
-  case class TerminalNode(meta: SchemaMeta, tpe: TypeDefinition, kind: TerminalKind) extends SchemaNode
-  case class DataDefiningNode(meta: SchemaMeta, dataDefs: List[DataNode], kind: DataDefiningKind) 
-      extends SchemaNode 
+  sealed trait DataNode extends SchemaNode
 
-  case class TypeDefinition(meta: SchemaMeta, builtIn: BuiltInType) extends SchemaNode 
-  object TypeDefinition {
-    def fromBuiltIn(builtIn: BuiltInType): TypeDefinition = TypeDefinition(
-      SchemaMeta(QName.defaultNamespace(builtIn.literal), None, false, Status.Current, List.empty), builtIn)
-  }
+  final case class Container(
+      meta: SchemaMeta,
+      children: List[DataNode]
+  ) extends DataNode
 
-  case class FeatureDefinition(meta: SchemaMeta) extends SchemaNode
+  final case class ListNode(
+      meta: SchemaMeta,
+      key: QName,
+      children: List[DataNode]
+  ) extends DataNode
 
-  def containerNode(meta: SchemaMeta, dataDefs: List[DataNode]) = DataDefiningNode(meta, dataDefs, ContainerNode)
-  def listNode(meta: SchemaMeta, dataDefs: List[DataNode], key: QName) = DataDefiningNode(meta, dataDefs, ListNode(key))
-  def leafNode(meta: SchemaMeta, tpe: TypeDefinition, mandatory: Boolean) = TerminalNode(meta, tpe, LeafNode(mandatory))
-  def leafListNode(meta: SchemaMeta, tpe: TypeDefinition) = TerminalNode(meta, tpe, LeafList)
+  final case class Leaf(
+      meta: SchemaMeta,
+      tpe: TypeDefinition,
+      mandatory: Boolean
+  ) extends DataNode
 
-  extension (self: SchemaNode) {
-    def mandatory: Boolean = {
+  final case class LeafList(
+      meta: SchemaMeta,
+      tpe: TypeDefinition
+  ) extends DataNode
+
+  extension (self: DataNode)
+    def hasMandatoryDescendant: Boolean =
       self match
-        case TerminalNode(meta, tpe, kind) => kind match
-          case LeafNode(mandatory) => mandatory
-          case LeafList => false
-        case DataDefiningNode(meta, dataDefs, kind) => dataDefs.find(_.mandatory).fold(false)(_ => true)
-        case _ => false
-    }
-  }
+        case Leaf(_, _, mandatory)    => mandatory
+        case LeafList(_, _)           => false
+        case Container(_, children)   => children.exists(_.hasMandatoryDescendant)
+        case ListNode(_, _, children) => children.exists(_.hasMandatoryDescendant)
 }

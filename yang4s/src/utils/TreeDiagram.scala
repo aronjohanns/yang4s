@@ -1,13 +1,16 @@
 package yang4s.utils
 
-import yang4s.schema.{Module => SModule, *}
 import yang4s.schema.SchemaNode.*
-import yang4s.schema.SchemaNodeKind.*
+// import yang4s.schema.SchemaModule.*
+import yang4s.schema.*
+import yang4s.schema.SchemaDefinition.*
+import yang4s.schema.SchemaModule.Submodule
+import cats.instances.boolean
 
 // https://datatracker.ietf.org/doc/html/rfc8340
 
 object TreeDiagram {
-  private def printQName(qName: QName, mod: SModule) = {
+  private def printQName(qName: QName, mod: SchemaModule.Module) = {
     if (qName.namespace == mod.namespace) {
       qName.localName
     } else {
@@ -15,61 +18,87 @@ object TreeDiagram {
     }
   }
 
-  private def printDataDef(node: DataNode, mod: SModule, isLast: Boolean, prefix: String, colLength: Int): String = {
-    def printRow(meta: SchemaMeta, dataDefs: List[DataNode], opts: String = "", suffix: Option[String] = None): String = {
-      val flag = if (meta.config) "rw" else "ro"
-      val status = {
-        meta.status match
-          case Status.Current => "+"
-          case yang4s.schema.Status.Deprecated => "x"
-          case Status.Obsolete => "o"
-      }
-
-
-      prefix ++ s"$status--$flag ${meta.qName.localName}$opts${suffix.map(s => s" $s").getOrElse("")}\n" ++ printDataDefs(
-        dataDefs,
-        mod,
-        prefix ++ { if (isLast) "   " else "|  " }
-      )
+  def printRow(
+    prefix: String,
+    module: SchemaModule.Module,
+    meta: SchemaMeta,
+    dataDefs: List[DataNode],
+    last: Boolean,
+    opts: String = "",
+    suffix: Option[String] = None
+  ): String = {
+    val flag = if (meta.config) "rw" else "ro"
+    val status = {
+      meta.status match
+      case Status.Current                  => "+"
+      case yang4s.schema.Status.Deprecated => "x"
+      case Status.Obsolete                 => "o"
     }
 
-
-    node match
-      case TerminalNode(meta, tpe, kind) => {
-        val features = {
-          meta.ifFeatures match
-            case Nil => ""
-            case _ @f => f.map(printQName(_, mod)).mkString("{", " ", "}?") 
-        }
-        val gap = colLength - meta.qName.localName.length
-        val typeName = {
-          val qName = tpe.meta.qName
-          val isBuiltin = BuiltInType.isBuiltin(qName.localName)
-          
-          if (isBuiltin) {
-            qName.localName
-          } else
-            printQName(qName, mod)
-        }
-        val indicator = kind match
-          case LeafNode(mandatory) => {
-            if (!mandatory) {
-              "?"
-            } else ""
-          }
-          case LeafList => "*"
-        
-        printRow(meta, List.empty, opts = indicator, suffix = Some(s"${" ".repeat(gap + (4 - indicator.length))}${typeName} $features"))
-
-      }
-      case DataDefiningNode(meta, dataDefs, kind) => {
-        kind match
-          case ContainerNode => printRow(meta, dataDefs)
-          case ListNode(key) => printRow(meta, dataDefs, opts = "*", suffix = Some(s"[${key.localName}]"))
-      }
+    prefix ++ s"$status--$flag ${meta.qName.localName}$opts${suffix.map(s => s" $s").getOrElse("")}\n" ++ printDataDefs(
+      dataDefs,
+      module,
+      prefix ++ { if (last) "   " else "|  " }
+    )
   }
 
-  private def printDataDefs(nodes: List[DataNode], mod: SModule, prefix: String = ""): String = {
+  private def printTerminalRow(
+    prefix: String,
+    module: SchemaModule.Module,
+    node: SchemaNode.Leaf | SchemaNode.LeafList,
+    last: Boolean,
+    colLength: Int
+  ): String =
+    val (meta, tpe, indicator) = node match
+      case Leaf(meta, tpe, mandatory) =>
+        val indicator = if mandatory then "" else "?"
+        (meta, tpe, indicator)
+
+      case LeafList(meta, tpe) =>
+        (meta, tpe, "*")
+
+    val features =
+      meta.ifFeatures match
+        case Nil => ""
+        case fs  => fs.map(printQName(_, module)).mkString("{", " ", "}?")
+
+    val gap = colLength - meta.qName.localName.length
+
+    val typeName =
+      val qName = tpe.meta.qName
+      if BuiltInType.isBuiltin(qName.localName) then qName.localName
+      else printQName(qName, module)
+
+    printRow(
+      prefix,
+      module,
+      meta,
+      List.empty,
+      last,
+      opts = indicator,
+      suffix = Some(s"${" ".repeat(gap + (4 - indicator.length))}$typeName $features")
+    )
+
+  private def printDataDef(
+      node: DataNode,
+      mod: SchemaModule.Module,
+      isLast: Boolean,
+      prefix: String,
+      colLength: Int
+  ): String = {
+
+    node match
+      case Container(meta, children) => printRow(prefix, mod, meta, children, isLast)
+      case ListNode(meta, key, children) => printRow(prefix, mod, meta, children, isLast, opts = "*", suffix = Some(s"[${key.localName}]"))
+      case leaf : Leaf  => printTerminalRow(prefix, mod, leaf, isLast, colLength)
+      case leafList : LeafList => printTerminalRow(prefix, mod, leafList, isLast, colLength)
+  }
+
+  private def printDataDefs(
+      nodes: List[DataNode],
+      mod: SchemaModule.Module,
+      prefix: String = ""
+  ): String = {
     val longestName = nodes
       .map(_.meta.qName.localName)
       .reduceOption { (a, b) =>
@@ -86,16 +115,13 @@ object TreeDiagram {
   }
 
   def printModules(modules: SchemaModule*): String = {
-    val implementedModules = modules
-      .filter { mod =>
-        mod match
-          case m: SModule => m.isImplemented
-          case _          => false
+    val implementedModules: Seq[SchemaModule.Module] =
+      modules.collect {
+        case m: SchemaModule.Module if m.isImplemented => m
       }
-      .asInstanceOf[Seq[SModule]]
 
     implementedModules.map { m =>
-      s"module: ${m.name}\n${{ printDataDefs(m.dataDefs, m, "  ")}}"
+      s"module: ${m.name}\n${{ printDataDefs(m.dataDefs, m, "  ") }}"
     }.mkString
   }
 }

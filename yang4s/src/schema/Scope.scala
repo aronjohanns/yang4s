@@ -1,6 +1,6 @@
 package yang4s.schema
 
-import yang4s.schema.SchemaNode.TypeDefinition
+import yang4s.schema.SchemaDefinition.*
 import yang4s.parser.Statement
 
 case class Scope(
